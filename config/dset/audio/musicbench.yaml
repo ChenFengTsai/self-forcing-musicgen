@@ -1,0 +1,62 @@
+# @package __global__
+
+datasource:
+  max_sample_rate: 32000
+  max_channels: 1
+  train: /storage/ssd1/richtsai1103/MusicBench/egs/musicbench/train
+  valid: /storage/ssd1/richtsai1103/MusicBench/egs/musicbench/valid
+  # Both of these act as your Test Set:
+  evaluate: /storage/ssd1/richtsai1103/MusicBench/egs/musicbench/generate
+  generate: /storage/ssd1/richtsai1103/MusicBench/egs/musicbench/generate
+
+dataset:
+  train:
+    num_samples: 1000000  
+    segment_duration: 10   
+    permutation_on_files: true
+  valid:
+    num_samples: 100 
+    segment_duration: 10   
+  evaluate:
+    num_samples: 100
+    segment_duration: 10
+  generate:
+    num_samples: 100
+    segment_duration: 10
+
+evaluate:
+  every: 10               # Run deep metrics every 10 epochs
+  num_workers: 5
+  metrics:
+    base: true            # Standard CE and PPL
+    fad: true             # Frechet Audio Distance
+    kld: true             # KL Divergence
+    text_consistency: true # CLAP Score
+    chroma_cosine: true   # Melody consistency
+
+generate:
+  every: 10               # Generate audio samples every 10 epochs
+  lm:
+    gen_duration: 10
+    prompt_duration: 5
+    gen_gt_samples: true  # Generate ground truth for side-by-side comparison
+
+# Define where the metric models are located
+metrics:
+  fad:
+    model: tf
+    tf:
+      # You may need to download these weights if they aren't at this path
+      model_path: //reference/fad/vggish_model.ckpt 
+  text_consistency:
+    model: clap
+    clap:
+      model_path: //reference/clap/music_audioset_epoch_15_esc_90.14.pt
+      
+# scheduled_sampling:
+#   use: true
+#   prob: 0.05
+#   warmup_updates: 5000
+#   ramp_updates: 10000
+#   use_sampling: true
+#   temp: 0.8

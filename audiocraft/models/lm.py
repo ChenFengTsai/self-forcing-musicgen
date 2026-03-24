@@ -320,6 +320,84 @@ class LMModel(StreamingModule):
         logits_mask = logits_mask[None, :, :].expand(B, -1, -1)  # [K, T] -> [B, K, T]
         return LMOutput(logits, logits_mask)
 
+    def compute_predictions_scheduled_sampling(
+        self,
+        codes: torch.Tensor,
+        conditions: tp.List["ConditioningAttributes"],
+        scheduled_prob: float = 0.0,
+        use_sampling: bool = False,
+        temp: float = 1.0,
+        ):
+        """
+        Two-pass scheduled sampling forward pass with late-sequence optimization.
+        Requires 'from audiocraft.models.lm import LMOutput' at the top of the file.
+        """
+        if scheduled_prob <= 0.0:
+            return self.compute_predictions(codes, conditions)
+
+        # 1. Build the exact teacher-forced patterned sequence
+        sequence_codes, _, sequence_mask = self.pattern.build_pattern_sequence(
+            codes,
+            self.special_token_id,
+            keep_only_valid_steps=False,
+        )
+
+        # 2. First Pass: Get model predictions (wrapped in no_grad to save VRAM)
+        with torch.no_grad():
+            tf_input = sequence_codes[:, :, :-1]
+            tf_out = self.forward(tf_input, conditions)
+            tf_logits = tf_out.logits if hasattr(tf_out, "logits") else tf_out
+
+            if use_sampling:
+                # Temperature-controlled sampling
+                logits_for_sample = tf_logits / max(temp, 1e-6)
+                probs = torch.softmax(logits_for_sample, dim=1)
+                probs = probs.permute(0, 2, 3, 1).contiguous()
+                pred_tokens = torch.multinomial(
+                    probs.view(-1, probs.size(-1)),
+                    num_samples=1
+                ).view(probs.size(0), probs.size(1), probs.size(2))
+            else:
+                # Greedy decoding
+                pred_tokens = torch.argmax(tf_logits, dim=1)
+
+        # 3. Build the Mixed Input (Ground Truth + Model Predictions)
+        mixed_input = sequence_codes[:, :, :-1].clone()
+        S = mixed_input.size(-1)
+        
+        # Late-Sequence Optimization: Only replace tokens in the last 70% of the sequence
+        late_start = int(0.3 * S)  
+        position_ids = torch.arange(S, device=mixed_input.device).view(1, 1, S)
+        late_mask = position_ids >= late_start
+
+        # Strict logical masks to protect padding, special tokens, and early sequence
+        valid_mask = sequence_mask[:, :, :-1].bool()
+        non_special_mask = mixed_input != self.special_token_id
+        replaceable_mask = valid_mask & non_special_mask & late_mask
+
+        # Generate replacement probabilities
+        random_mask = torch.rand(
+            mixed_input.shape,
+            device=mixed_input.device,
+        ) < scheduled_prob
+
+        # Apply the exact replacements
+        replace_mask = replaceable_mask & random_mask
+        mixed_input[replace_mask] = pred_tokens[replace_mask]
+
+        # 4. Second Pass: Real training forward on the mixed input
+        final_out = self.forward(mixed_input, conditions)
+        final_logits = final_out.logits if hasattr(final_out, "logits") else final_out
+
+        # 5. Revert logits back to the parallel codebook structure
+        logits, logits_mask = self.pattern.revert_pattern_logits(
+            final_logits,
+            sequence_codes.shape[-1],
+            keep_only_valid_steps=False,
+        )
+
+        return LMOutput(logits=logits, mask=logits_mask)
+    
     def _sample_next_token(self,
                            sequence: torch.Tensor,
                            cfg_conditions: CFGConditions,

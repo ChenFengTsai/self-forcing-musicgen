@@ -378,7 +378,39 @@ class MusicGenSolver(base.StandardSolver):
                 if isinstance(self.model.condition_provider.conditioners.self_wav, StyleConditioner):
                     style_mask = self.model.condition_provider.conditioners.self_wav.mask
 
-            model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)  # type: ignore
+            # model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)  # type: ignore
+            # --- SCHEDULED SAMPLING ROUTING ---
+            scheduled_prob = 0.0
+            use_scheduled_sampling = False
+
+            # Enforce sampling ONLY during active training (not validation/evaluation)
+            if self.model.training and hasattr(self.cfg, "scheduled_sampling") and self.cfg.scheduled_sampling.use:
+                warmup = getattr(self.cfg.scheduled_sampling, "warmup_updates", 0)
+                max_prob = getattr(self.cfg.scheduled_sampling, "prob", 0.0)
+                ramp_updates = getattr(self.cfg.scheduled_sampling, "ramp_updates", 0)
+
+                # Calculate the current probability ramp
+                if self.num_updates >= warmup:
+                    use_scheduled_sampling = True
+                    if ramp_updates > 0:
+                        progress = min(1.0, (self.num_updates - warmup) / ramp_updates)
+                        scheduled_prob = max_prob * progress
+                    else:
+                        scheduled_prob = max_prob
+
+            # Trigger the custom two-pass method if probability is above 0
+            if use_scheduled_sampling and scheduled_prob > 0.0:
+                model_output = self.model.compute_predictions_scheduled_sampling(
+                    audio_tokens,
+                    conditions=condition_tensors,
+                    scheduled_prob=scheduled_prob,
+                    use_sampling=getattr(self.cfg.scheduled_sampling, "use_sampling", False),
+                    temp=getattr(self.cfg.scheduled_sampling, "temp", 1.0),
+                )
+            else:
+                # Standard parallel teacher forcing path
+                model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)
+            # --- END SCHEDULED SAMPLING ROUTING ---
             logits = model_output.logits
             if style_mask is not None:
                 mask = padding_mask & model_output.mask & style_mask
