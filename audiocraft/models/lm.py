@@ -12,6 +12,7 @@ import typing as tp
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 from ..utils import utils
 from ..modules.streaming import StreamingModule, State
@@ -319,84 +320,6 @@ class LMModel(StreamingModule):
         logits = logits.permute(0, 2, 3, 1)  # [B, K, T, card]
         logits_mask = logits_mask[None, :, :].expand(B, -1, -1)  # [K, T] -> [B, K, T]
         return LMOutput(logits, logits_mask)
-
-    def compute_predictions_scheduled_sampling(
-        self,
-        codes: torch.Tensor,
-        conditions: tp.List["ConditioningAttributes"],
-        scheduled_prob: float = 0.0,
-        use_sampling: bool = False,
-        temp: float = 1.0,
-    ):
-        """
-        Two-pass scheduled sampling forward pass with late-sequence optimization.
-        Requires 'from audiocraft.models.lm import LMOutput' at the top of the file.
-        """
-        if scheduled_prob <= 0.0:
-            return self.compute_predictions(codes, conditions)
-
-        # 1. Build the exact teacher-forced patterned sequence
-        sequence_codes, _, sequence_mask = self.pattern.build_pattern_sequence(
-            codes,
-            self.special_token_id,
-            keep_only_valid_steps=False,
-        )
-
-        # 2. First Pass: Get model predictions (wrapped in no_grad to save VRAM)
-        with torch.no_grad():
-            tf_input = sequence_codes[:, :, :-1]
-            tf_out = self.forward(tf_input, conditions)
-            tf_logits = tf_out.logits if hasattr(tf_out, "logits") else tf_out
-
-            if use_sampling:
-                # Temperature-controlled sampling
-                logits_for_sample = tf_logits / max(temp, 1e-6)
-                probs = torch.softmax(logits_for_sample, dim=1)
-                probs = probs.permute(0, 2, 3, 1).contiguous()
-                pred_tokens = torch.multinomial(
-                    probs.view(-1, probs.size(-1)),
-                    num_samples=1
-                ).view(probs.size(0), probs.size(1), probs.size(2))
-            else:
-                # Greedy decoding
-                pred_tokens = torch.argmax(tf_logits, dim=1)
-
-        # 3. Build the Mixed Input (Ground Truth + Model Predictions)
-        mixed_input = sequence_codes[:, :, :-1].clone()
-        S = mixed_input.size(-1)
-        
-        # Late-Sequence Optimization: Only replace tokens in the last 70% of the sequence
-        late_start = int(0.3 * S)  
-        position_ids = torch.arange(S, device=mixed_input.device).view(1, 1, S)
-        late_mask = position_ids >= late_start
-
-        # Strict logical masks to protect padding, special tokens, and early sequence
-        valid_mask = sequence_mask[:, :, :-1].bool()
-        non_special_mask = mixed_input != self.special_token_id
-        replaceable_mask = valid_mask & non_special_mask & late_mask
-
-        # Generate replacement probabilities
-        random_mask = torch.rand(
-            mixed_input.shape,
-            device=mixed_input.device,
-        ) < scheduled_prob
-
-        # Apply the exact replacements
-        replace_mask = replaceable_mask & random_mask
-        mixed_input[replace_mask] = pred_tokens[replace_mask]
-
-        # 4. Second Pass: Real training forward on the mixed input
-        final_out = self.forward(mixed_input, conditions)
-        final_logits = final_out.logits if hasattr(final_out, "logits") else final_out
-
-        # 5. Revert logits back to the parallel codebook structure
-        logits, logits_mask = self.pattern.revert_pattern_logits(
-            final_logits,
-            sequence_codes.shape[-1],
-            keep_only_valid_steps=False,
-        )
-
-        return LMOutput(logits=logits, mask=logits_mask)
     
     def _sample_next_token(self,
                            sequence: torch.Tensor,
@@ -663,3 +586,255 @@ class LMModel(StreamingModule):
         # ensure the returned codes are all valid
         assert (out_codes >= 0).all() and (out_codes <= self.card).all()
         return out_codes
+    
+    # @torch.no_grad()
+    # def rollout(self, prefix_tokens, condition_tensors, total_len):
+    #     """
+    #     prefix_tokens: (B, T0, K)
+    #     condition_tensors: dict
+    #     total_len: int
+    #     """
+    #     self.eval()
+    #     generated = prefix_tokens.clone()
+
+    #     while generated.shape[1] < total_len:
+    #         # convert to (B, K, T)
+    #         gen_input = generated.permute(0, 2, 1)
+
+    #         model_output = self.compute_predictions(
+    #             gen_input, [], condition_tensors
+    #         )
+    #         logits = model_output.logits  # (B, K, T, vocab)
+
+    #         # take last timestep
+    #         next_logits = logits[:, :, -1, :]  # (B, K, vocab)
+
+    #         next_token = torch.argmax(next_logits, dim=-1)  # (B, K)
+
+    #         next_token = next_token.unsqueeze(1)  # (B, 1, K)
+    #         generated = torch.cat([generated, next_token], dim=1)
+
+    #     return generated
+
+    # def prefix_rollout_ce(self, tokens, condition_tensors, prefix_ratio=0.3):
+    #     """
+    #     tokens: (B, T, K)
+    #     """
+    #     B, T, K = tokens.shape
+
+    #     prefix_len = int(T * prefix_ratio)
+    #     assert 1 <= prefix_len < T
+
+    #     prefix = tokens[:, :prefix_len]
+
+    #     # === rollout ===
+    #     with torch.no_grad():
+    #         with torch.cuda.amp.autocast(enabled=True):
+    #             generated = self.rollout(prefix, condition_tensors, T)
+
+    #     # === compute logits ===
+    #     gen_input = generated[:, :-1].permute(0, 2, 1)  # (B, K, T-1)
+
+    #     with torch.cuda.amp.autocast(enabled=True):
+    #         model_output = self.compute_predictions(
+    #             gen_input, [], condition_tensors
+    #         )
+    #     logits = model_output.logits  # (B, K, T-1, vocab)
+
+    #     # convert to (B, T-1, K, vocab)
+    #     logits = logits.permute(0, 2, 1, 3)
+
+    #     targets = tokens[:, 1:]  # (B, T-1, K)
+
+    #     # === only evaluate rollout region ===
+    #     start = prefix_len - 1
+    #     logits = logits[:, start:]
+    #     targets = targets[:, start:]
+
+    #     vocab_size = logits.shape[-1]
+
+    #     loss = 0.0
+    #     for q in range(K):
+    #         loss_q = F.cross_entropy(
+    #             logits[:, :, q, :].reshape(-1, vocab_size),
+    #             targets[:, :, q].reshape(-1),
+    #             reduction="mean"
+    #         )
+    #         loss += loss_q
+
+    #     loss /= K
+
+    #     return loss
+    
+    # @torch.no_grad()
+    # def rollout(self, prefix_tokens, condition_tensors, total_len):
+    #     self.eval()
+        
+    #     # 1. Prepare the prompt (B, K, T)
+    #     prompt = prefix_tokens.permute(0, 2, 1)
+    #     B, K, T0 = prompt.shape
+    #     device = prompt.device
+
+    #     # 2. To be consistent with 'generate', we must prepare for CFG.
+    #     # We create a 'null' version of your conditions to reach batch size 2B.
+    #     # Case 1: already tuple (two_step_cfg)
+    #     if isinstance(condition_tensors, tuple):
+    #         # already (cond, null_cond)
+    #         cfg_conditions = condition_tensors
+
+    #     elif isinstance(condition_tensors, dict):
+    #         cfg_conditions = {}
+    #         for key, value in condition_tensors.items():
+    #             cond, cond_mask = value
+
+    #             cfg_conditions[key] = (
+    #                 torch.cat([cond, cond], dim=0),
+    #                 torch.cat([cond_mask, cond_mask], dim=0)
+    #             )
+
+    #     # 3. Setup the pattern sequence
+    #     pattern = self.pattern_provider.get_pattern(total_len)
+    #     gen_codes = torch.full((B, K, total_len), -1, dtype=torch.long, device=device)
+    #     gen_codes[..., :T0] = prompt
+    #     gen_sequence, _, mask = pattern.build_pattern_sequence(gen_codes, self.special_token_id)
+        
+    #     start_offset_sequence = pattern.get_first_step_with_timesteps(T0)
+
+    #     with self.streaming():
+    #         # This state is used by _sample_next_token to handle the 'unconditional' pass
+    #         unconditional_state = self.get_streaming_state()
+    #         prev_offset = 0
+            
+    #         for offset in range(start_offset_sequence, gen_sequence.shape[-1]):
+    #             curr_sequence = gen_sequence[..., prev_offset:offset]
+                
+    #             # 4. Now this call will WORK because cfg_conditions is 2B
+    #             next_token = self._sample_next_token(
+    #                 sequence=curr_sequence, 
+    #                 cfg_conditions=cfg_conditions, # Now size 2B
+    #                 unconditional_state=unconditional_state, 
+    #                 use_sampling=False,
+    #                 cfg_coef=1.0 # Setting this to 1.0 makes the CFG math return just the conditional logits
+    #             )
+                
+    #             valid_mask = mask[..., offset:offset+1].expand(B, -1, -1)
+    #             next_token[~valid_mask] = self.special_token_id
+    #             gen_sequence[..., offset:offset+1] = torch.where(
+    #                 gen_sequence[..., offset:offset+1] == -1,
+    #                 next_token, gen_sequence[..., offset:offset+1]
+    #             )
+    #             prev_offset = offset
+                
+    #     unconditional_state.clear()
+    #     out_codes, _, _ = pattern.revert_pattern_sequence(gen_sequence, special_token=-1)
+    #     return out_codes[..., :total_len].permute(0, 2, 1)
+    
+    @torch.no_grad()
+    def rollout(self, prefix_tokens, condition_tensors, total_len):
+        """
+        prefix_tokens: (B, T0, K)
+        condition_tensors: dict from condition_provider
+        total_len: int
+        """
+        self.eval()
+
+        prompt = prefix_tokens.permute(0, 2, 1)  # (B, K, T0)
+        B, K, T0 = prompt.shape
+        device = prompt.device
+
+        # Build doubled condition tensors for CFG (cond + cond, since we want cfg_coef=1.0)
+        cfg_conditions = {}
+        for key, value in condition_tensors.items():
+            cond, cond_mask = value
+            cfg_conditions[key] = (
+                torch.cat([cond, cond], dim=0),
+                torch.cat([cond_mask, cond_mask], dim=0),
+            )
+
+        pattern = self.pattern_provider.get_pattern(total_len)
+        gen_codes = torch.full((B, K, total_len), self.special_token_id, dtype=torch.long, device=device)
+        gen_codes[..., :T0] = prompt
+
+        gen_sequence, _, mask = pattern.build_pattern_sequence(gen_codes, self.special_token_id)
+        start_offset = pattern.get_first_step_with_timesteps(T0)
+
+        with self.streaming():
+            unconditional_state = self.get_streaming_state()
+            prev_offset = 0
+
+            for offset in range(start_offset, gen_sequence.shape[-1]):
+                curr_sequence = gen_sequence[..., prev_offset:offset]
+
+                next_token = self._sample_next_token(
+                    sequence=curr_sequence,
+                    cfg_conditions=cfg_conditions,
+                    unconditional_state=unconditional_state,
+                    use_sampling=False,
+                    cfg_coef=1.0,  # no CFG scaling, just conditional logits
+                )
+
+                valid_mask = mask[..., offset:offset+1].expand(B, -1, -1)
+                next_token[~valid_mask] = self.special_token_id
+                gen_sequence[..., offset:offset+1] = torch.where(
+                    gen_sequence[..., offset:offset+1] == self.special_token_id,
+                    next_token,
+                    gen_sequence[..., offset:offset+1],
+                )
+                prev_offset = offset
+
+        unconditional_state.clear()
+        out_codes, _, _ = pattern.revert_pattern_sequence(gen_sequence, special_token=-1)
+        return out_codes[..., :total_len].permute(0, 2, 1)  # (B, T, K)
+
+    def prefix_rollout_ce(self, tokens, condition_tensors, prefix_ratio=0.3):
+        """
+        tokens: (B, T, K)
+        """
+        B, T, K = tokens.shape
+
+        prefix_len = int(T * prefix_ratio)
+        assert 1 <= prefix_len < T
+
+        prefix = tokens[:, :prefix_len]
+
+        with torch.no_grad():
+            # === rollout ===
+            # Note: For accurate results, replace this custom rollout with self.generate() 
+            # or ensure your rollout loop respects the CodebooksPatternProvider.
+            with torch.cuda.amp.autocast(enabled=True):
+                generated = self.rollout(prefix, condition_tensors, T)
+
+            # === compute logits ===
+            gen_input = generated[:, :-1].permute(0, 2, 1)  # (B, K, T-1)
+
+            with torch.cuda.amp.autocast(enabled=True):
+                model_output = self.compute_predictions(
+                    gen_input, [], condition_tensors
+                )
+            
+            logits = model_output.logits  # (B, K, T-1, vocab)
+
+            # convert to (B, T-1, K, vocab)
+            logits = logits.permute(0, 2, 1, 3)
+            targets = tokens[:, 1:]  # (B, T-1, K)
+
+            # === only evaluate rollout region ===
+            start = prefix_len - 1
+            logits = logits[:, start:]
+            targets = targets[:, start:]
+
+            vocab_size = logits.shape[-1]
+
+            loss = 0.0
+            for q in range(K):
+                loss_q = F.cross_entropy(
+                    logits[:, :, q, :].reshape(-1, vocab_size),
+                    targets[:, :, q].reshape(-1),
+                    reduction="mean",
+                    ignore_index=self.special_token_id  # Prevents out-of-bounds NaN errors
+                )
+                loss += loss_q
+
+            loss /= K
+
+        return loss

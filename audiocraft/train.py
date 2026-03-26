@@ -26,6 +26,8 @@ from .utils.cluster import get_slurm_parameters
 
 logger = logging.getLogger(__name__)
 
+logging.getLogger("audiocraft.modules.codebooks_patterns").setLevel(logging.WARNING)
+
 
 def resolve_config_dset_paths(cfg):
     """Enable Dora to load manifest from git clone repository."""

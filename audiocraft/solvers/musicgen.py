@@ -378,39 +378,8 @@ class MusicGenSolver(base.StandardSolver):
                 if isinstance(self.model.condition_provider.conditioners.self_wav, StyleConditioner):
                     style_mask = self.model.condition_provider.conditioners.self_wav.mask
 
-            # model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)  # type: ignore
-            # --- SCHEDULED SAMPLING ROUTING ---
-            scheduled_prob = 0.0
-            use_scheduled_sampling = False
-
-            # Enforce sampling ONLY during active training (not validation/evaluation)
-            if self.model.training and hasattr(self.cfg, "scheduled_sampling") and self.cfg.scheduled_sampling.use:
-                warmup = getattr(self.cfg.scheduled_sampling, "warmup_updates", 0)
-                max_prob = getattr(self.cfg.scheduled_sampling, "prob", 0.0)
-                ramp_updates = getattr(self.cfg.scheduled_sampling, "ramp_updates", 0)
-
-                # Calculate the current probability ramp
-                if self.num_updates >= warmup:
-                    use_scheduled_sampling = True
-                    if ramp_updates > 0:
-                        progress = min(1.0, (self.num_updates - warmup) / ramp_updates)
-                        scheduled_prob = max_prob * progress
-                    else:
-                        scheduled_prob = max_prob
-
-            # Trigger the custom two-pass method if probability is above 0
-            if use_scheduled_sampling and scheduled_prob > 0.0:
-                model_output = self.model.compute_predictions_scheduled_sampling(
-                    audio_tokens,
-                    conditions=condition_tensors,
-                    scheduled_prob=scheduled_prob,
-                    use_sampling=getattr(self.cfg.scheduled_sampling, "use_sampling", False),
-                    temp=getattr(self.cfg.scheduled_sampling, "temp", 1.0),
-                )
-            else:
-                # Standard parallel teacher forcing path
-                model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)
-            # --- END SCHEDULED SAMPLING ROUTING ---
+            model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)  # type: ignore
+           
             logits = model_output.logits
             if style_mask is not None:
                 mask = padding_mask & model_output.mask & style_mask
@@ -467,6 +436,21 @@ class MusicGenSolver(base.StandardSolver):
 
         metrics['ce'] = ce
         metrics['ppl'] = torch.exp(ce)
+        
+        # ===== Prefix rollout CE =====
+        if not self.is_training and getattr(self.cfg.evaluate, "prefix_rollout_ce", False):
+            # audio_tokens: (B, K, T) → (B, T, K)
+            tokens = audio_tokens.permute(0, 2, 1)
+
+            rollout_ce = self.model.prefix_rollout_ce(
+                tokens,
+                condition_tensors,
+                prefix_ratio=self.cfg.evaluate.prefix_ratio
+            )
+
+            metrics['prefix_rollout_ce'] = rollout_ce
+        # =============================
+        
         for k, ce_q in enumerate(ce_per_codebook):
             metrics[f'ce_q{k + 1}'] = ce_q
             metrics[f'ppl_q{k + 1}'] = torch.exp(ce_q)
@@ -765,6 +749,7 @@ class MusicGenSolver(base.StandardSolver):
                 metrics['text_consistency'] = text_consistency.compute()
             if chroma_cosine is not None:
                 metrics['chroma_cosine'] = chroma_cosine.compute()
+                
             metrics = average(metrics)
             metrics = flashy.distrib.average_metrics(metrics, len(loader))
 
