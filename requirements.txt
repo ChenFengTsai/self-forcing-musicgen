@@ -27,3 +27,4 @@ torchtext==0.16.0
 pesq
 pystoi
 torchdiffeq
+transformers==4.31.0

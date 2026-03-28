@@ -9,20 +9,20 @@ datasource:
   generate: /storage/ssd1/richtsai1103/Jamendo/egs/jamendo/generate
 
 dataset:
-  segment_duration: 10
+  segment_duration: 30
   train:
     num_samples: 9000
-    segment_duration: 10
+    segment_duration: 30
     permutation_on_files: true
   valid:
     num_samples: 500
-    segment_duration: 10
+    segment_duration: 30
   evaluate:
     num_samples: 500
-    segment_duration: 10
+    segment_duration: 30
   generate:
     num_samples: 50
-    segment_duration: 10
+    segment_duration: 30
 
 evaluate:
   every: 10
@@ -33,20 +33,23 @@ evaluate:
     kld: true
     text_consistency: true
     chroma_cosine: true
-  prefix_rollout_ce: false
+  prefix_rollout_ce: true
   prefix_ratio: 0.3
-  temporal_analysis: false
+  temporal_analysis: true
   window_sizes_sec: [10, 20, 30]
-  windowed_audio_metrics: false
+  windowed_audio_metrics: true
 
 generate:
   every: 10
   lm:
-    gen_duration: 10
-    prompt_duration: 5
+    gen_duration: 30
+    prompt_duration: 15
     gen_gt_samples: true
 
 metrics:
+  kld:
+    passt:
+      pretrained_length: 30
   fad:
     model: tf
     tf:
