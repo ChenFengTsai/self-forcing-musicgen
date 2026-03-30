@@ -382,7 +382,27 @@ class MusicGenSolver(base.StandardSolver):
                 if isinstance(self.model.condition_provider.conditioners.self_wav, StyleConditioner):
                     style_mask = self.model.condition_provider.conditioners.self_wav.mask
 
-            model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)  # type: ignore
+            # ---- SASS: use structure-aware scheduled sampling if enabled ----
+            use_sass = self.is_training and getattr(self.cfg, 'sass', None) is not None \
+                       and getattr(self.cfg.sass, 'enabled', False)
+
+            if use_sass:
+                sass_cfg = self.cfg.sass
+                model_output = self.model.compute_sass_predictions(
+                    audio_tokens, [], condition_tensors,
+                    current_step=self.global_step if hasattr(self, 'global_step') else idx,
+                    p_max=getattr(sass_cfg, 'p_max', 0.25),
+                    warmup_start=getattr(sass_cfg, 'warmup_start', 5000),
+                    warmup_ramp=getattr(sass_cfg, 'warmup_ramp', 8000),
+                    alpha=getattr(sass_cfg, 'alpha', 2.0),
+                    beta=getattr(sass_cfg, 'beta', 0.25),
+                    gamma=getattr(sass_cfg, 'gamma', 2.0),
+                    c_min=getattr(sass_cfg, 'c_min', 0.35),
+                    c_max=getattr(sass_cfg, 'c_max', 0.85),
+                    token_cap=getattr(sass_cfg, 'token_cap', 0.25),
+                )  # type: ignore
+            else:
+                model_output = self.model.compute_predictions(audio_tokens, [], condition_tensors)  # type: ignore
            
             logits = model_output.logits
             if style_mask is not None:
