@@ -57,14 +57,37 @@ metrics:
     clap:
       model_path: //reference/clap/music_audioset_epoch_15_esc_90.14.pt
       
+# sass:
+#   enabled: false
+#   p_max: 0.25         # global ceiling
+#   warmup_start: 3000   # start SASS after this many steps
+#   warmup_ramp: 6000    # ramp to full strength over this many steps
+#   alpha: 2.0           # temporal exponent (2 = quadratic)
+#   beta: 0.25           # min replacement for codebook 0
+#   gamma: 2.0           # depth exponent
+#   c_min: 0.35          # confidence floor
+#   c_max: 0.85          # confidence ceiling
+#   token_cap: 0.25      # hard per-position cap
+
+# slower transition
+# sass:
+#   enabled: false
+#   p_max: 0.20          # Lowered from 0.25 to protect FAD/Acoustic quality
+#   warmup_start: 3800   # Wait until start of Epoch 7
+#   warmup_ramp: 6340    # Gradual 10-epoch ramp (634 * 10)
+#   alpha: 2.0           # Keep quadratic; harder to predict late tokens
+#   beta: 0.15           # Lowered min replacement to keep Codebook 0 stable
+#   token_cap: 0.20      # Ensure at least 80% ground-truth always exists
+
+# improved with 
 sass:
-  enabled: true
-  p_max: 0.25         # global ceiling
-  warmup_start: 3000   # start SASS after this many steps
-  warmup_ramp: 6000    # ramp to full strength over this many steps
-  alpha: 2.0           # temporal exponent (2 = quadratic)
-  beta: 0.25           # min replacement for codebook 0
-  gamma: 2.0           # depth exponent
-  c_min: 0.35          # confidence floor
-  c_max: 0.85          # confidence ceiling
-  token_cap: 0.25      # hard per-position cap
+  enabled: false
+  p_max: 0.75         # global ceiling (increased from 0.25)
+  warmup_start: 3000  # start SASS after this many steps
+  warmup_ramp: 6000   # ramp to full strength over this many steps
+  alpha: 1.0          # temporal exponent (1.0 = linear)
+  beta: 0.50          # min replacement for codebook 0 (increased from 0.25)
+  gamma: 2.0          # depth exponent
+  c_min: 0.15         # confidence floor (lowered from 0.35)
+  c_max: 0.85         # confidence ceiling
+  token_cap: 0.75     # hard per-position cap (increased to match p_max)
