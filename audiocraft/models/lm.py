@@ -124,27 +124,23 @@ def _save_temporal_results(
 #     per_step_ce = per_step_ce / K
 #     return per_step_ce
 
-def _compute_per_step_ce(
-    logits: torch.Tensor,       # (B, T, K, vocab)
-    valid_mask: torch.Tensor,   # (B, T, K)
-    targets: torch.Tensor,      # (B, T, K)
-) -> torch.Tensor:
+def _compute_per_step_ce(logits, valid_mask, targets):
     B, T, K, vocab = logits.shape
     logits_flat = logits.reshape(-1, vocab)
     targets_flat = targets.reshape(-1)
-
+    
     safe_targets_flat = targets_flat.clamp(min=0, max=vocab - 1)
-
+    
     loss_all = F.cross_entropy(logits_flat.float(), safe_targets_flat, reduction='none')
     loss_all = loss_all.view(B, T, K)
-
-    mask_float = valid_mask.float()
-    masked_loss = loss_all * mask_float
-
-    sum_loss_per_tk = masked_loss.sum(dim=0)
-    valid_count_per_tk = mask_float.sum(dim=0).clamp(min=1.0)
+    
+    # NaN/Inf at invalid positions must be zeroed BEFORE summing
+    loss_all = torch.where(valid_mask, loss_all, torch.zeros_like(loss_all))
+    
+    sum_loss_per_tk = loss_all.sum(dim=0)
+    valid_count_per_tk = valid_mask.float().sum(dim=0).clamp(min=1.0)
     mean_ce_per_tk = sum_loss_per_tk / valid_count_per_tk
-
+    
     return mean_ce_per_tk.mean(dim=-1)
 
 
@@ -734,17 +730,8 @@ class LMModel(StreamingModule):
                 targets    = targets[:, start:]
                 T_roll     = logits.shape[1]
 
-                # --- NaN guard: check logits before computing loss ---
-                if not logits.isfinite().all():
-                    if was_training:
-                        self.train()
-                    
-                    # FIX: Return a tuple if temporal_analysis is True to prevent unpacking errors
-                    nan_tensor = torch.tensor(float('nan'), device=tokens.device)
-                    if temporal_analysis:
-                        return nan_tensor, nan_tensor, {}
-                    return nan_tensor
-
+                
+                
                 if not temporal_analysis:
                     loss = 0.0
                     for q in range(K):
