@@ -59,14 +59,47 @@ metrics:
     clap:
       model_path: //reference/clap/music_audioset_epoch_15_esc_90.14.pt
 
+
+
+# sass:
+#   enabled: false
+#   p_max: 0.5         # Dropped from 0.25. Replaces max 15% of frames.
+#   warmup_start: 5000  # Keep this. Let the model learn basic audio first.
+#   warmup_ramp: 8000   # Keep this. Smoothly introduces SASS.
+#   alpha: 1.0          # Keep at 2.0 (Quadratic). Protects early prompt tokens.
+#   beta: 0.0           # [UNUSED] Kept in config only to prevent schema crashes.
+#   gamma: 0.0          # [UNUSED] Kept in config only to prevent schema crashes.
+#   c_min: 0.35         # Keep this. Prevents replacing tokens the model is guessing on.
+#   c_max: 0.85         # Keep this. 
+#   token_cap: 0.5     # Dropped to match p_max. Strict hard cap on replacement.
+
+# sass:
+#   enabled: true
+#   p_max: 0.15         # Replaces up to 15% (down from 50%)
+#   warmup_start: 5000
+#   warmup_ramp: 8000
+#   alpha: 2.0          # Parabolic curve (keeps early tokens mostly ground truth)
+#   beta: 0.0
+#   gamma: 0.0
+#   c_min: 0.35
+#   c_max: 0.85
+#   token_cap: 0.15     # Hard cap at 15%
+
+
 sass:
   enabled: true
-  p_max: 0.25         # global ceiling
-  warmup_start: 5000   # start SASS after this many steps
-  warmup_ramp: 8000    # ramp to full strength over this many steps
-  alpha: 2.0           # temporal exponent (2 = quadratic)
-  beta: 0.25           # min replacement for codebook 0
-  gamma: 2.0           # depth exponent
-  c_min: 0.35          # confidence floor
-  c_max: 0.85          # confidence ceiling
-  token_cap: 0.25      # hard per-position cap
+  p_max: 0.20           # slightly higher ceiling (was 0.15)
+  warmup_start: 5000
+  warmup_ramp: 8000
+  decay_ratio: 0.7      # NEW: after peak, decay p_max to 30% of its value
+  alpha: 1.5            # linear temporal curve (was 2.0 parabolic)
+  c_min: 0.35
+  c_max: 0.85
+  token_cap: 0.20       # match p_max
+  temp: 1.0
+  top_k: 250
+  codebook_weights:      # NEW: weight each codebook's confidence in frame-level gating
+    - 0.5                # q1 — coarse, usually confident; lower weight in decision
+    - 0.5                # q2
+    - 1.0                # q3 — harder; must be confident for safe frame replacement
+    - 1.0                # q4 — hardest; must be confident for safe frame replacement

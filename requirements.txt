@@ -1,7 +1,46 @@
-# please make sure you have already a pytorch install that is cuda enabled!
+# # please make sure you have already a pytorch install that is cuda enabled!
+# av==15.1.0
+# einops
+# flashy>=0.0.1
+# hydra-core>=1.1
+# hydra_colorlog
+# julius
+# num2words
+# numpy<2.0.0
+# sentencepiece
+# spacy==3.7.6
+# torch==2.1.0
+# torchaudio>=2.0.0,<2.1.2
+# huggingface_hub
+# tqdm
+# transformers>=4.31.0  # need Encodec there.
+# xformers<0.0.23
+# demucs
+# librosa
+# soundfile
+# gradio
+# torchmetrics
+# encodec
+# protobuf
+# torchvision==0.16.0
+# torchtext==0.16.0
+# pesq
+# pystoi
+# torchdiffeq
+# transformers==4.31.0
+# resampy
+# scipy==1.13.1
+# tensorflow==2.15.0
+# six
+# submitit==1.5.0
+# typer-slim==0.23.2
+
+# hear21passt @ git+https://github.com/kkoutini/passt_hear21@0.0.19#egg=hear21passt
+# laion-clap==1.1.7
+# -r google-research/frechet_audio_distance/requirements.txt
+
 av==15.1.0
 einops
-flashy>=0.0.1
 hydra-core>=1.1
 hydra_colorlog
 julius
@@ -9,12 +48,10 @@ num2words
 numpy<2.0.0
 sentencepiece
 spacy==3.7.6
-torch==2.1.0
-torchaudio>=2.0.0,<2.1.2
-huggingface_hub
+huggingface_hub==0.16.4
 tqdm
-transformers>=4.31.0  # need Encodec there.
-xformers<0.0.23
+transformers==4.31.0
+xformers==0.0.22.post7
 demucs
 librosa
 soundfile
@@ -22,19 +59,16 @@ gradio
 torchmetrics
 encodec
 protobuf
-torchvision==0.16.0
-torchtext==0.16.0
 pesq
 pystoi
 torchdiffeq
-transformers==4.31.0
 resampy
 scipy==1.13.1
 tensorflow==2.15.0
 six
 submitit==1.5.0
 typer-slim==0.23.2
-
+flashy>=0.0.1
 hear21passt @ git+https://github.com/kkoutini/passt_hear21@0.0.19#egg=hear21passt
 laion-clap==1.1.7
--r google-research/frechet_audio_distance/requirements.txt
+tf_slim
