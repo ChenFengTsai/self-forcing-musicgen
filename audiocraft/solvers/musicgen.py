@@ -1914,6 +1914,230 @@ class MusicGenSolver(base.StandardSolver):
 
     #     return metrics
     
+    # def _compute_windowed_fad_beat(
+    #     self,
+    #     gen_wavs: tp.List[torch.Tensor],   # list of (C, T) CPU tensors
+    #     ref_wavs: tp.List[torch.Tensor],   # list of (C, T) CPU tensors
+    #     sample_rate: int,
+    #     window_sizes_sec: tp.List[int],
+    #     epoch: int,
+    # ) -> tp.Dict[str, float]:
+    #     """Compute FAD and beat stats for isolated, non-overlapping temporal windows."""
+    #     metrics: tp.Dict[str, float] = {}
+    #     all_beat_stats: tp.List[tp.Dict] = []
+
+    #     prev_sec = 0
+    #     prev_samples = 0
+
+    #     # Ensure chronological order
+    #     for w_sec in sorted(window_sizes_sec):
+    #         w_samples = int(w_sec * sample_rate)
+    #         key = f'{prev_sec}-{w_sec}s'
+    #         chunk_duration = w_sec - prev_sec
+
+    #         # ---- slice audio to ISOLATED window ----
+    #         gen_slices = [w[:, prev_samples:w_samples] if w.dim() == 2 else w[prev_samples:w_samples]
+    #                       for w in gen_wavs]
+    #         ref_slices = [w[:, prev_samples:w_samples] if w.dim() == 2 else w[prev_samples:w_samples]
+    #                       for w in ref_wavs]
+
+    #         # Skip if the slice is empty (e.g., generated audio is shorter than expected)
+    #         if any(s.shape[-1] == 0 for s in gen_slices):
+    #             continue
+
+    #         # ---- windowed FAD ----
+    #         try:
+    #             torch.cuda.empty_cache()
+    #             fad_w = builders.get_fad(self.cfg.metrics.fad).to(self.device)
+    #             sizes_gen = torch.tensor([s.shape[-1] for s in gen_slices])
+    #             sizes_ref = torch.tensor([s.shape[-1] for s in ref_slices])
+    #             sr_tensor = torch.tensor([sample_rate] * len(gen_slices))
+    #             stems = [f'window_{key}_sample{i}' for i in range(len(gen_slices))]
+
+    #             gen_batch = torch.stack(gen_slices).unsqueeze(1) if gen_slices[0].dim() == 1 else torch.stack(gen_slices)
+    #             ref_batch = torch.stack(ref_slices).unsqueeze(1) if ref_slices[0].dim() == 1 else torch.stack(ref_slices)
+
+    #             fad_w.update(gen_batch, ref_batch, sizes_gen, sr_tensor, stems)
+    #             fad_val = float(fad_w.compute())
+    #             metrics[f'fad_{key}'] = fad_val
+    #         except Exception as e:
+    #             self.logger.warning(f"Windowed FAD failed for window {key}: {e}")
+    #             fad_val = -1.0
+    #             metrics[f'fad_{key}'] = fad_val
+
+    #         # ---- beat tracking on generated slices ----
+    #         window_beat_stats: tp.Dict[str, float] = {
+    #             f'beat_tempo_{key}': 0.0,
+    #             f'beat_regularity_{key}': 0.0,
+    #         }
+    #         beat_entries = []
+            
+    #         for wav in gen_slices:
+    #             # We tell the beat tracker this is a standalone chunk of length `chunk_duration`
+    #             s = self._compute_beat_stats(wav, sample_rate, [chunk_duration])
+                
+    #             # Remap the returned keys (e.g., '10s') to the target chunk key (e.g., '20-30s')
+    #             adjusted_s = {
+    #                 f'beat_tempo_{key}': s.get(f'beat_tempo_{chunk_duration}s', 0.0),
+    #                 f'beat_regularity_{key}': s.get(f'beat_regularity_{chunk_duration}s', 0.0),
+    #             }
+    #             beat_entries.append(adjusted_s)
+
+    #         if beat_entries:
+    #             for stat_key in window_beat_stats.keys():
+    #                 window_beat_stats[stat_key] = float(np.mean([e[stat_key] for e in beat_entries]))
+    #         metrics.update(window_beat_stats)
+
+    #         all_beat_stats.append({
+    #             'window': key,
+    #             'fad': fad_val,
+    #             **window_beat_stats,
+    #         })
+
+    #         # Advance the boundaries for the next iteration
+    #         prev_samples = w_samples
+    #         prev_sec = w_sec
+
+    #     # ---- save to jsonl ----
+    #     dora_dir = os.environ.get("AUDIOCRAFT_DORA_DIR", "")
+    #     out_dir = os.path.join(dora_dir, "temporal_logs") if dora_dir else "temporal_logs"
+    #     os.makedirs(out_dir, exist_ok=True)
+    #     record = {'epoch': epoch, 'windows': all_beat_stats}
+    #     with open(os.path.join(out_dir, "windowed_audio_metrics.jsonl"), "a") as f:
+    #         f.write(json.dumps(record) + "\n")
+
+    #     return metrics
+
+    # def evaluate_audio_generation(self) -> dict:
+    #     """Evaluate audio generation with off-the-shelf metrics."""
+    #     evaluate_stage_name = f'{self.current_stage}_generation'
+    #     # instantiate evaluation metrics, if at least one metric is defined, run audio generation evaluation
+    #     fad: tp.Optional[eval_metrics.FrechetAudioDistanceMetric] = None
+    #     kldiv: tp.Optional[eval_metrics.KLDivergenceMetric] = None
+    #     text_consistency: tp.Optional[eval_metrics.TextConsistencyMetric] = None
+    #     chroma_cosine: tp.Optional[eval_metrics.ChromaCosineSimilarityMetric] = None
+    #     should_run_eval = False
+    #     eval_chroma_wavs: tp.Optional[torch.Tensor] = None
+    #     if self.cfg.evaluate.metrics.fad:
+    #         fad = builders.get_fad(self.cfg.metrics.fad).to(self.device)
+    #         should_run_eval = True
+    #     if self.cfg.evaluate.metrics.kld:
+    #         kldiv = builders.get_kldiv(self.cfg.metrics.kld).to(self.device)
+    #         should_run_eval = True
+    #     if self.cfg.evaluate.metrics.text_consistency:
+    #         text_consistency = builders.get_text_consistency(self.cfg.metrics.text_consistency).to(self.device)
+    #         should_run_eval = True
+    #     if self.cfg.evaluate.metrics.chroma_cosine:
+    #         chroma_cosine = builders.get_chroma_cosine_similarity(self.cfg.metrics.chroma_cosine).to(self.device)
+    #         # if we have predefind wavs for chroma we should purge them for computing the cosine metric
+    #         has_predefined_eval_chromas = 'self_wav' in self.model.condition_provider.conditioners and \
+    #                                       self.model.condition_provider.conditioners['self_wav'].has_eval_wavs()
+    #         if has_predefined_eval_chromas:
+    #             warn_once(self.logger, "Attempting to run cosine eval for config with pre-defined eval chromas! "
+    #                                    'Resetting eval chromas to None for evaluation.')
+    #             eval_chroma_wavs = self.model.condition_provider.conditioners.self_wav.eval_wavs  # type: ignore
+    #             self.model.condition_provider.conditioners.self_wav.reset_eval_wavs(None)  # type: ignore
+    #         should_run_eval = True
+
+    #     def get_compressed_audio(audio: torch.Tensor) -> torch.Tensor:
+    #         audio_tokens, scale = self.compression_model.encode(audio.to(self.device))
+    #         compressed_audio = self.compression_model.decode(audio_tokens, scale)
+    #         return compressed_audio[..., :audio.shape[-1]]
+
+    #     metrics: dict = {}
+    #     if should_run_eval:
+    #         loader = self.dataloaders['evaluate']
+    #         updates = len(loader)
+    #         lp = self.log_progress(f'{evaluate_stage_name} inference', loader, total=updates, updates=self.log_updates)
+    #         average = flashy.averager()
+    #         dataset = get_dataset_from_loader(loader)
+    #         assert isinstance(dataset, AudioDataset)
+    #         self.logger.info(f"Computing evaluation metrics on {len(dataset)} samples")
+
+    #         # accumulators for windowed FAD + beat tracking
+    #         do_windowed = getattr(self.cfg.evaluate, "windowed_audio_metrics", False)
+    #         window_sizes_sec = list(getattr(self.cfg.evaluate, "window_sizes_sec", [10, 20, 30]))
+    #         all_gen_wavs: tp.List[torch.Tensor] = []
+    #         all_ref_wavs: tp.List[torch.Tensor] = []
+
+    #         for idx, batch in enumerate(lp):
+    #             audio, meta = batch
+    #             assert all([self.cfg.sample_rate == m.sample_rate for m in meta])
+
+    #             target_duration = audio.shape[-1] / self.cfg.sample_rate
+    #             if self.cfg.evaluate.fixed_generation_duration:
+    #                 target_duration = self.cfg.evaluate.fixed_generation_duration
+
+    #             gen_outputs = self.run_generate_step(
+    #                 batch, gen_duration=target_duration,
+    #                 remove_text_conditioning=self.cfg.evaluate.get('remove_text_conditioning', False)
+    #             )
+    #             y_pred = gen_outputs['gen_audio'].detach()
+    #             y_pred = y_pred[..., :audio.shape[-1]]
+
+    #             normalize_kwargs = dict(self.cfg.generate.audio)
+    #             normalize_kwargs.pop('format', None)
+    #             y_pred = torch.stack([normalize_audio(w, **normalize_kwargs) for w in y_pred], dim=0).cpu()
+    #             y = audio.cpu()  # should already be on CPU but just in case
+    #             sizes = torch.tensor([m.n_frames for m in meta])  # actual sizes without padding
+    #             sample_rates = torch.tensor([m.sample_rate for m in meta])  # sample rates for audio samples
+    #             audio_stems = [Path(m.meta.path).stem + f"_{m.seek_time}" for m in meta]
+
+    #             if fad is not None:
+    #                 if self.cfg.metrics.fad.use_gt:
+    #                     y_pred = get_compressed_audio(y).cpu()
+    #                 fad.update(y_pred, y, sizes, sample_rates, audio_stems)
+    #             if kldiv is not None:
+    #                 if self.cfg.metrics.kld.use_gt:
+    #                     y_pred = get_compressed_audio(y).cpu()
+    #                 kldiv.update(y_pred, y, sizes, sample_rates)
+    #             if text_consistency is not None:
+    #                 texts = [m.description for m in meta]
+    #                 if self.cfg.metrics.text_consistency.use_gt:
+    #                     y_pred = y
+    #                 text_consistency.update(y_pred, texts, sizes, sample_rates)
+    #             if chroma_cosine is not None:
+    #                 if self.cfg.metrics.chroma_cosine.use_gt:
+    #                     y_pred = get_compressed_audio(y).cpu()
+    #                 chroma_cosine.update(y_pred, y, sizes, sample_rates)
+    #                 # restore chroma conditioner's eval chroma wavs
+    #                 if eval_chroma_wavs is not None:
+    #                     self.model.condition_provider.conditioners['self_wav'].reset_eval_wavs(eval_chroma_wavs)
+
+    #             # accumulate for windowed metrics (collect individual samples, not batches)
+    #             if do_windowed:
+    #                 for i in range(y_pred.shape[0]):
+    #                     all_gen_wavs.append(y_pred[i].cpu())
+    #                     all_ref_wavs.append(y[i].cpu())
+
+    #         flashy.distrib.barrier()
+
+    #         # ---- windowed FAD + beat tracking ----
+    #         if do_windowed and len(all_gen_wavs) > 0:
+    #             windowed_metrics = self._compute_windowed_fad_beat(
+    #                 gen_wavs=all_gen_wavs,
+    #                 ref_wavs=all_ref_wavs,
+    #                 sample_rate=self.cfg.sample_rate,
+    #                 window_sizes_sec=window_sizes_sec,
+    #                 epoch=self.epoch,
+    #             )
+    #             metrics.update(windowed_metrics)
+
+    #         if fad is not None:
+    #             metrics['fad'] = fad.compute()
+    #         if kldiv is not None:
+    #             kld_metrics = kldiv.compute()
+    #             metrics.update(kld_metrics)
+    #         if text_consistency is not None:
+    #             metrics['text_consistency'] = text_consistency.compute()
+    #         if chroma_cosine is not None:
+    #             metrics['chroma_cosine'] = chroma_cosine.compute()
+                
+    #         metrics = average(metrics)
+    #         metrics = flashy.distrib.average_metrics(metrics, len(loader))
+
+    #     return metrics
+
     def _compute_windowed_fad_beat(
         self,
         gen_wavs: tp.List[torch.Tensor],   # list of (C, T) CPU tensors
@@ -1922,92 +2146,162 @@ class MusicGenSolver(base.StandardSolver):
         window_sizes_sec: tp.List[int],
         epoch: int,
     ) -> tp.Dict[str, float]:
-        """Compute FAD and beat stats for isolated, non-overlapping temporal windows."""
+        """Compute FAD and beat stats for isolated, non-overlapping temporal windows.
+ 
+        Collective-safe wrapper: gathers wavs from every rank, runs the actual
+        computation on rank 0 only, then broadcasts the metrics dict so every
+        rank returns the same result and no collective mismatches can happen.
+ 
+        This prevents the epoch-10 crash caused by:
+          1. `len(all_gen_wavs) > 0` gate diverging across ranks.
+          2. `continue` on empty slices firing on some ranks but not others.
+          3. torchmetrics `.compute()` all-reduces inside a per-window loop
+             that different ranks traverse a different number of times.
+        """
+        # Gather all ranks' wavs on rank 0 (list-of-lists of CPU tensors).
+        # flashy 0.0.2 doesn't expose all_gather_object, so use torch.distributed
+        # directly. Fall back to single-process mode if distributed isn't initialized.
+        import torch.distributed as dist
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            rank = dist.get_rank()
+            gathered_gen: tp.List[tp.List[torch.Tensor]] = [None] * world_size  # type: ignore
+            gathered_ref: tp.List[tp.List[torch.Tensor]] = [None] * world_size  # type: ignore
+            # gather_object only populates the dst rank's output list.
+            dist.gather_object(
+                gen_wavs,
+                gathered_gen if rank == 0 else None,
+                dst=0,
+            )
+            dist.gather_object(
+                ref_wavs,
+                gathered_ref if rank == 0 else None,
+                dst=0,
+            )
+        else:
+            rank = 0
+            gathered_gen = [gen_wavs]
+            gathered_ref = [ref_wavs]
+ 
+        if rank == 0:
+            all_gen: tp.List[torch.Tensor] = [w for sub in gathered_gen for w in sub]
+            all_ref: tp.List[torch.Tensor] = [w for sub in gathered_ref for w in sub]
+            metrics: tp.Optional[tp.Dict[str, float]] = self._compute_windowed_fad_beat_local(
+                all_gen, all_ref, sample_rate, window_sizes_sec, epoch,
+            )
+        else:
+            metrics = None
+ 
+        metrics = flashy.distrib.broadcast_object(metrics, src=0)
+        return metrics or {}
+ 
+    def _compute_windowed_fad_beat_local(
+        self,
+        gen_wavs: tp.List[torch.Tensor],
+        ref_wavs: tp.List[torch.Tensor],
+        sample_rate: int,
+        window_sizes_sec: tp.List[int],
+        epoch: int,
+    ) -> tp.Dict[str, float]:
+        """Rank-0-only implementation. Must NOT call any torch.distributed
+        collective, because non-zero ranks are parked in the outer
+        broadcast_object. In particular, do NOT call torchmetrics
+        `fad_w.compute()` here — it performs a dist all-reduce on its state.
+        Use the private `_local_compute_frechet_audio_distance()` instead,
+        which runs the FAD subprocesses without any sync."""
         metrics: tp.Dict[str, float] = {}
         all_beat_stats: tp.List[tp.Dict] = []
-
+ 
         prev_sec = 0
         prev_samples = 0
-
+ 
         # Ensure chronological order
         for w_sec in sorted(window_sizes_sec):
             w_samples = int(w_sec * sample_rate)
             key = f'{prev_sec}-{w_sec}s'
             chunk_duration = w_sec - prev_sec
-
+ 
             # ---- slice audio to ISOLATED window ----
             gen_slices = [w[:, prev_samples:w_samples] if w.dim() == 2 else w[prev_samples:w_samples]
                           for w in gen_wavs]
             ref_slices = [w[:, prev_samples:w_samples] if w.dim() == 2 else w[prev_samples:w_samples]
                           for w in ref_wavs]
-
-            # Skip if the slice is empty (e.g., generated audio is shorter than expected)
-            if any(s.shape[-1] == 0 for s in gen_slices):
+ 
+            # Skip if the slice is empty. Safe here: rank 0 only, no peer waiting.
+            if not gen_slices or any(s.shape[-1] == 0 for s in gen_slices):
+                prev_samples = w_samples
+                prev_sec = w_sec
                 continue
-
+ 
             # ---- windowed FAD ----
+            fad_val = -1.0
             try:
-                torch.cuda.empty_cache()
+                # torch.cuda.empty_cache()
                 fad_w = builders.get_fad(self.cfg.metrics.fad).to(self.device)
                 sizes_gen = torch.tensor([s.shape[-1] for s in gen_slices])
                 sizes_ref = torch.tensor([s.shape[-1] for s in ref_slices])
                 sr_tensor = torch.tensor([sample_rate] * len(gen_slices))
                 stems = [f'window_{key}_sample{i}' for i in range(len(gen_slices))]
-
+ 
                 gen_batch = torch.stack(gen_slices).unsqueeze(1) if gen_slices[0].dim() == 1 else torch.stack(gen_slices)
                 ref_batch = torch.stack(ref_slices).unsqueeze(1) if ref_slices[0].dim() == 1 else torch.stack(ref_slices)
-
+ 
                 fad_w.update(gen_batch, ref_batch, sizes_gen, sr_tensor, stems)
-                fad_val = float(fad_w.compute())
+ 
+                # IMPORTANT: use the private local compute to avoid torchmetrics
+                # _sync_dist, which would all_reduce on `total_files` and deadlock
+                # because non-zero ranks are sitting in broadcast_object.
+                fad_score = fad_w._local_compute_frechet_audio_distance()
+                fad_val = float(fad_score) if fad_score is not None else -1.0
                 metrics[f'fad_{key}'] = fad_val
             except Exception as e:
                 self.logger.warning(f"Windowed FAD failed for window {key}: {e}")
                 fad_val = -1.0
                 metrics[f'fad_{key}'] = fad_val
-
+ 
             # ---- beat tracking on generated slices ----
             window_beat_stats: tp.Dict[str, float] = {
                 f'beat_tempo_{key}': 0.0,
                 f'beat_regularity_{key}': 0.0,
             }
             beat_entries = []
-            
+ 
             for wav in gen_slices:
                 # We tell the beat tracker this is a standalone chunk of length `chunk_duration`
                 s = self._compute_beat_stats(wav, sample_rate, [chunk_duration])
-                
+ 
                 # Remap the returned keys (e.g., '10s') to the target chunk key (e.g., '20-30s')
                 adjusted_s = {
                     f'beat_tempo_{key}': s.get(f'beat_tempo_{chunk_duration}s', 0.0),
                     f'beat_regularity_{key}': s.get(f'beat_regularity_{chunk_duration}s', 0.0),
                 }
                 beat_entries.append(adjusted_s)
-
+ 
             if beat_entries:
                 for stat_key in window_beat_stats.keys():
                     window_beat_stats[stat_key] = float(np.mean([e[stat_key] for e in beat_entries]))
             metrics.update(window_beat_stats)
-
+ 
             all_beat_stats.append({
                 'window': key,
                 'fad': fad_val,
                 **window_beat_stats,
             })
-
+ 
             # Advance the boundaries for the next iteration
             prev_samples = w_samples
             prev_sec = w_sec
-
-        # ---- save to jsonl ----
+ 
+        # ---- save to jsonl (rank 0 only) ----
         dora_dir = os.environ.get("AUDIOCRAFT_DORA_DIR", "")
         out_dir = os.path.join(dora_dir, "temporal_logs") if dora_dir else "temporal_logs"
         os.makedirs(out_dir, exist_ok=True)
         record = {'epoch': epoch, 'windows': all_beat_stats}
         with open(os.path.join(out_dir, "windowed_audio_metrics.jsonl"), "a") as f:
             f.write(json.dumps(record) + "\n")
-
+ 
         return metrics
-
+ 
     def evaluate_audio_generation(self) -> dict:
         """Evaluate audio generation with off-the-shelf metrics."""
         evaluate_stage_name = f'{self.current_stage}_generation'
@@ -2038,12 +2332,12 @@ class MusicGenSolver(base.StandardSolver):
                 eval_chroma_wavs = self.model.condition_provider.conditioners.self_wav.eval_wavs  # type: ignore
                 self.model.condition_provider.conditioners.self_wav.reset_eval_wavs(None)  # type: ignore
             should_run_eval = True
-
+ 
         def get_compressed_audio(audio: torch.Tensor) -> torch.Tensor:
             audio_tokens, scale = self.compression_model.encode(audio.to(self.device))
             compressed_audio = self.compression_model.decode(audio_tokens, scale)
             return compressed_audio[..., :audio.shape[-1]]
-
+ 
         metrics: dict = {}
         if should_run_eval:
             loader = self.dataloaders['evaluate']
@@ -2053,28 +2347,28 @@ class MusicGenSolver(base.StandardSolver):
             dataset = get_dataset_from_loader(loader)
             assert isinstance(dataset, AudioDataset)
             self.logger.info(f"Computing evaluation metrics on {len(dataset)} samples")
-
+ 
             # accumulators for windowed FAD + beat tracking
             do_windowed = getattr(self.cfg.evaluate, "windowed_audio_metrics", False)
             window_sizes_sec = list(getattr(self.cfg.evaluate, "window_sizes_sec", [10, 20, 30]))
             all_gen_wavs: tp.List[torch.Tensor] = []
             all_ref_wavs: tp.List[torch.Tensor] = []
-
+ 
             for idx, batch in enumerate(lp):
                 audio, meta = batch
                 assert all([self.cfg.sample_rate == m.sample_rate for m in meta])
-
+ 
                 target_duration = audio.shape[-1] / self.cfg.sample_rate
                 if self.cfg.evaluate.fixed_generation_duration:
                     target_duration = self.cfg.evaluate.fixed_generation_duration
-
+ 
                 gen_outputs = self.run_generate_step(
                     batch, gen_duration=target_duration,
                     remove_text_conditioning=self.cfg.evaluate.get('remove_text_conditioning', False)
                 )
                 y_pred = gen_outputs['gen_audio'].detach()
                 y_pred = y_pred[..., :audio.shape[-1]]
-
+ 
                 normalize_kwargs = dict(self.cfg.generate.audio)
                 normalize_kwargs.pop('format', None)
                 y_pred = torch.stack([normalize_audio(w, **normalize_kwargs) for w in y_pred], dim=0).cpu()
@@ -2082,7 +2376,7 @@ class MusicGenSolver(base.StandardSolver):
                 sizes = torch.tensor([m.n_frames for m in meta])  # actual sizes without padding
                 sample_rates = torch.tensor([m.sample_rate for m in meta])  # sample rates for audio samples
                 audio_stems = [Path(m.meta.path).stem + f"_{m.seek_time}" for m in meta]
-
+ 
                 if fad is not None:
                     if self.cfg.metrics.fad.use_gt:
                         y_pred = get_compressed_audio(y).cpu()
@@ -2103,17 +2397,22 @@ class MusicGenSolver(base.StandardSolver):
                     # restore chroma conditioner's eval chroma wavs
                     if eval_chroma_wavs is not None:
                         self.model.condition_provider.conditioners['self_wav'].reset_eval_wavs(eval_chroma_wavs)
-
+ 
                 # accumulate for windowed metrics (collect individual samples, not batches)
                 if do_windowed:
                     for i in range(y_pred.shape[0]):
                         all_gen_wavs.append(y_pred[i].cpu())
                         all_ref_wavs.append(y[i].cpu())
-
+ 
             flashy.distrib.barrier()
-
+ 
             # ---- windowed FAD + beat tracking ----
-            if do_windowed and len(all_gen_wavs) > 0:
+            # NOTE: every rank MUST call _compute_windowed_fad_beat regardless of
+            # whether its local shard is empty — the function performs an
+            # all_gather_object internally, then dispatches the actual work to
+            # rank 0 and broadcasts the result. Gating on local length here
+            # would desync ranks.
+            if do_windowed:
                 windowed_metrics = self._compute_windowed_fad_beat(
                     gen_wavs=all_gen_wavs,
                     ref_wavs=all_ref_wavs,
@@ -2121,8 +2420,9 @@ class MusicGenSolver(base.StandardSolver):
                     window_sizes_sec=window_sizes_sec,
                     epoch=self.epoch,
                 )
-                metrics.update(windowed_metrics)
-
+                if windowed_metrics:
+                    metrics.update(windowed_metrics)
+ 
             if fad is not None:
                 metrics['fad'] = fad.compute()
             if kldiv is not None:
@@ -2135,9 +2435,9 @@ class MusicGenSolver(base.StandardSolver):
                 
             metrics = average(metrics)
             metrics = flashy.distrib.average_metrics(metrics, len(loader))
-
+ 
         return metrics
-
+    
     def evaluate(self) -> dict:
         """Evaluate stage."""
         self.model.eval()

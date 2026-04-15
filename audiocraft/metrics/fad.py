@@ -16,6 +16,7 @@ from audiocraft.data.audio_utils import convert_audio
 import flashy
 import torch
 import torchmetrics
+import re
 
 from ..environment import AudioCraftEnvironment
 
@@ -280,6 +281,33 @@ class FrechetAudioDistanceMetric(torchmetrics.Metric):
         except Exception as e:
             raise RuntimeError(f"Error parsing FAD score from command stdout: {e}")
 
+
+    # def _compute_fad_score(self, gpu_index: tp.Optional[int] = None):
+    #     cmd = [
+    #         self.python_path, "-m", "frechet_audio_distance.compute_fad",
+    #         "--test_stats", f"{str(self.stats_tests_dir)}",
+    #         "--background_stats", f"{str(self.stats_background_dir)}",
+    #     ]
+    #     logger.info(f"Launching frechet_audio_distance compute fad method: {' '.join(cmd)}")
+    #     env = os.environ
+    #     if gpu_index is not None:
+    #         env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
+    #     result = subprocess.run(cmd, env={**env, **self.tf_env}, capture_output=True)
+    #     if result.returncode:
+    #         logger.error(
+    #             "Error with FAD computation from stats: \n %s \n %s",
+    #             result.stdout.decode(), result.stderr.decode()
+    #         )
+    #         raise RuntimeError("Error while executing FAD computation from stats")
+    #     try:
+    #         stdout_text = result.stdout.decode("utf-8", errors="replace")
+    #         match = re.search(r"FAD:\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)", stdout_text)
+    #         if match is None:
+    #             raise RuntimeError(f"Could not find FAD score in stdout:\n{stdout_text}")
+    #         return float(match.group(1))
+    #     except Exception as e:
+    #         raise RuntimeError(f"Error parsing FAD score from command stdout: {e}")
+
     def _log_process_result(self, returncode: int, log_file: tp.Union[Path, str], is_background: bool) -> None:
         beams_name = self._get_samples_name(is_background)
         if returncode:
@@ -312,11 +340,11 @@ class FrechetAudioDistanceMetric(torchmetrics.Metric):
     @flashy.distrib.rank_zero_only
     def _local_compute_frechet_audio_distance(self):
         """Compute Frechet Audio Distance score calling TensorFlow API."""
-        num_of_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
-        if num_of_gpus > 1:
-            self._parallel_create_embedding_beams(num_of_gpus)
-        else:
-            self._sequential_create_embedding_beams()
+        # num_of_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        # if num_of_gpus > 1:
+        #     self._parallel_create_embedding_beams(num_of_gpus)
+        # else:
+        self._sequential_create_embedding_beams()
         fad_score = self._compute_fad_score(gpu_index=0)
         return fad_score
 
@@ -327,3 +355,24 @@ class FrechetAudioDistanceMetric(torchmetrics.Metric):
         logger.warning(f"FAD score = {fad_score}")
         fad_score = flashy.distrib.broadcast_object(fad_score, src=0)
         return fad_score
+ 
+    # def compute(self) -> float:
+    #     """Compute metrics."""
+    #     assert self.total_files.item() > 0, "No files dumped for FAD computation!"  # type: ignore
+    #     fad_score = self._local_compute_frechet_audio_distance()
+    #     logger.warning(f"FAD score = {fad_score}")
+ 
+    #     # Barrier so non-zero ranks don't sit alone inside broadcast_object
+    #     # for the 30-90+ seconds it takes rank 0 to run the FAD subprocesses.
+    #     # Without this, rank 1 enters broadcast_object almost instantly after
+    #     # _local_compute_frechet_audio_distance returns None on non-zero ranks,
+    #     # while rank 0 is still running create_embeddings / compute_fad.
+    #     # NCCL/gloo watchdog fires on rank 1's stranded collective and kills
+    #     # the worker with no Python traceback. Submitit then reports
+    #     # "Worker 0 died, killing all workers".
+    #     import torch.distributed as dist
+    #     if dist.is_available() and dist.is_initialized():
+    #         dist.barrier()
+ 
+    #     fad_score = flashy.distrib.broadcast_object(fad_score, src=0)
+    #     return fad_score
