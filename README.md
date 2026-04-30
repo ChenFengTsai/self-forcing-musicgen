@@ -33,23 +33,12 @@ Our framework is implemented over MusicGen and was extensively evaluated via con
 
 ## Installation & Usage
 
-AudioCraft requires Python 3.9, PyTorch 2.1.0. To install AudioCraft, you can run the following:
+AudioCraft requires Python 3.9 and PyTorch 2.1.0. We provide an `environment.yml` for reproducible setup via Conda:
 
 ```shell
-# Best to make sure you have torch installed first, in particular before installing xformers.
-# Don't run this if you already have PyTorch installed.
-python -m pip install 'torch==2.1.0'
-# You might need the following before trying to install the packages
-python -m pip install setuptools wheel
-python -m pip install -e .  # or if you cloned the repo locally (mandatory if you want to train).
-```
-
-We also recommend having `ffmpeg` installed, either through your system or Anaconda:
-
-```bash
-sudo apt-get install ffmpeg
-# Or if you are using Anaconda or Miniconda
-conda install "ffmpeg<5" -c conda-forge
+conda env create -f environment.yml
+conda activate new_audio
+python -m pip install -e .
 ```
 
 ## Data Preparation
