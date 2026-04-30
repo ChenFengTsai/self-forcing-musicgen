@@ -38,6 +38,8 @@ evaluate:
   temporal_analysis: true
   window_sizes_sec: [10, 20, 30]
   windowed_audio_metrics: true
+  kld_tag: "sass"
+  codebook_kld: true
 
 generate:
   every: 10
@@ -98,6 +100,7 @@ sass:
   token_cap: 0.20       # match p_max
   temp: 1.0
   top_k: 250
+
   codebook_weights:      # NEW: weight each codebook's confidence in frame-level gating
     - 0.5                # q1 — coarse, usually confident; lower weight in decision
     - 0.5                # q2
