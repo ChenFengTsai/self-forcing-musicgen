@@ -154,17 +154,6 @@ To run the baseline without SASS, simply set `sass.enabled=false` (or omit the S
 
 ## Citation
 
-If you use SASS in your research, please cite our paper:
-
-```
-@inproceedings{tsai2026sass,
-    title={Mitigating Structural Collapse in Multi-Codebook Autoregressive Music Generation via Structure-Aware Scheduled Sampling},
-    author={TODO},
-    booktitle={Proceedings of the International Society for Music Information Retrieval Conference (ISMIR)},
-    year={2026},
-}
-```
-
 For the general framework of AudioCraft, please cite the following.
 
 ```
